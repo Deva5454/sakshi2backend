@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const { authenticateToken } = require("../middleware/auth");
 
 const CompanyRouter = require("./companyName.routes");
 const StaffRouter = require("./staff.routes");
@@ -19,6 +20,22 @@ const RoleDepartmentRouter = require("./roleDepartment.routes");
 const RoleDepartmentCompanyRouter = require("./roleDepartmentCompany.routes");
 const performanceInvoiceRoutes = require("./performanceInvoice.route");
 const Vendor = require("./vendor.routes");
+
+// SECURITY: previously, most route files below had no authentication
+// middleware at all, meaning almost every endpoint (orders, purchases,
+// accounts, vendors, staff records, etc.) was readable and writable by
+// anyone on the internet with no login required. This blanket gate closes
+// that gap by requiring a valid JWT for every /api/* request except the
+// login endpoint itself (which obviously must stay public — that's how you
+// get a token in the first place).
+const PUBLIC_PATHS = new Set(["/staff/login"]);
+
+router.use((req, res, next) => {
+  if (PUBLIC_PATHS.has(req.path)) {
+    return next();
+  }
+  return authenticateToken(req, res, next);
+});
 
 router.use("/company", CompanyRouter);
 router.use("/staff", StaffRouter);

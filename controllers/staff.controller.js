@@ -402,16 +402,26 @@ exports.loginStaff = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Check for required fields
-    if (!email || !password) {
+    // Check for required fields, and reject non-string values outright.
+    // Without this, a payload like {"email": {"$gt": ""}} would be handed
+    // straight to Mongoose's query filter — a classic NoSQL injection
+    // vector for bypassing the login check entirely.
+    if (
+      !email ||
+      !password ||
+      typeof email !== "string" ||
+      typeof password !== "string"
+    ) {
       return res.status(400).json({
         success: false,
         message: "Email and password are required",
       });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+
     // Find staff by email and populate role
-    const staff = await Staff.findOne({ email }).populate("role");
+    const staff = await Staff.findOne({ email: normalizedEmail }).populate("role");
     if (!staff) {
       return res.status(401).json({
         success: false,
@@ -444,10 +454,14 @@ exports.loginStaff = async (req, res) => {
       await staff.save();
     }
 
-    // Generate JWT token
+    // Generate JWT token. Previously this had no expiry at all, meaning a
+    // token — once issued — would remain valid forever, even if leaked or
+    // if the staff member is later deactivated. 7 days balances security
+    // with not forcing people to re-login constantly.
     const token = jwt.sign(
       { id: staff._id, role: staff.role.roleName, roleData: staff.role },
-      process.env.JWT_SECRET || "your_jwt_secret_key" // Replace with environment variable in production
+      process.env.JWT_SECRET || "your_jwt_secret_key",
+      { expiresIn: "7d" }
     );
 
     res.status(200).json({

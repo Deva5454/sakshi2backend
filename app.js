@@ -3,12 +3,18 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const cors = require("cors");
+const helmet = require("helmet");
 const logger = require("morgan");
 const cookieParser = require("cookie-parser");
 const { connectDB } = require("./db/connectDB");
 const createError = require("http-errors");
 
 const app = express();
+
+// Baseline HTTP security headers (X-Frame-Options, X-Content-Type-Options,
+// etc). Safe no-op for a JSON API; disable CSP since this server doesn't
+// serve the frontend's HTML.
+app.use(helmet({ contentSecurityPolicy: false }));
 
 // Ensure the local "uploads" scratch directory exists. This is only used as
 // a short-lived staging area for CSV/Excel bulk-import endpoints (the files
@@ -69,6 +75,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
+app.use(require("./middleware/sanitizeInput"));
 app.use(express.static(path.join(__dirname, "public")));
 
 const AllRoutes = require("./routes/index");
@@ -93,13 +100,24 @@ app.use(function(req, res, next) {
   next(createError(404));
 });
 
-// error handler
-app.use(function(err, req, res, next) {
-  // set locals, only providing error in development
-  res.locals.message = err.message;
-  res.locals.error = req.app.get("env") === "development" ? err : {};
-  res.status(err.status || 500);
-  res.render("error");
+// SECURITY: the previous handler used res.render("error"), an EJS view that
+// prints the raw error stack trace into the HTML response
+// (`<pre><%= error.stack %></pre>`) whenever NODE_ENV isn't exactly
+// "production". Since this env var was never explicitly set on the hosting
+// platform, Express was defaulting to development mode — meaning any
+// unhandled server error leaked internal file paths and stack traces to
+// whoever triggered it. This also makes far more sense for an API-only
+// backend: the frontend expects JSON error bodies, not an HTML page.
+app.use(function (err, req, res, next) {
+  const status = err.status || 500;
+  console.error(`❌ [${status}]`, err.message);
+  if (process.env.NODE_ENV !== "production") {
+    console.error(err.stack);
+  }
+  res.status(status).json({
+    success: false,
+    message: status === 404 ? "Not found" : "Something went wrong",
+  });
 });
 
 module.exports = app;
