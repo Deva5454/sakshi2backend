@@ -7,26 +7,34 @@ const CompanyName = require("../models/companyName.model");
 const path = require("path");
 const fs = require("fs");
 const csv = require("csv-parser");
-var CryptoJS = require("crypto-js");
+const bcrypt = require("bcryptjs");
 
-const SECRET_KEY = process.env.CRYPTO_SECRET || "your-secret-key";
-// Encrypt function
- const encryptData = (text) => {
-  return CryptoJS.AES.encrypt(text, SECRET_KEY).toString();
+const BCRYPT_ROUNDS = 10;
+
+// One-way hash function (replaces reversible AES encryption previously used here)
+const encryptData = async (text) => {
+  return bcrypt.hash(text, BCRYPT_ROUNDS);
 };
 
-// Decrypt function
- const decryptData = (ciphertext) => {
-  var bytes = CryptoJS.AES.decrypt(ciphertext, SECRET_KEY);
-  var originalText = bytes.toString(CryptoJS.enc.Utf8);
-  console.log(originalText, 'originalText')
-  return originalText;
-};
-
-// Compare function (like bcrypt.compare)
- const compareData = (plainText, cipherText) => {
-  const decrypted = decryptData(cipherText);
-  return decrypted === plainText;
+// Compare function. Supports both new bcrypt hashes and legacy AES-encrypted
+// passwords created before this migration, so existing accounts keep working
+// without a forced reset. Legacy hashes get transparently upgraded to bcrypt
+// on next successful login (see loginStaff).
+const compareData = async (plainText, storedHash) => {
+  // bcrypt hashes always start with one of these prefixes
+  if (/^\$2[aby]\$/.test(storedHash)) {
+    return bcrypt.compare(plainText, storedHash);
+  }
+  // Fall back to legacy AES comparison for pre-migration accounts
+  try {
+    const CryptoJS = require("crypto-js");
+    const SECRET_KEY = process.env.CRYPTO_SECRET || "your-secret-key";
+    const bytes = CryptoJS.AES.decrypt(storedHash, SECRET_KEY);
+    const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+    return decrypted === plainText;
+  } catch {
+    return false;
+  }
 };
 
 // Create a new Staff
@@ -128,7 +136,7 @@ exports.createStaff = async (req, res) => {
         message: "Invalid company ID. No matching company found.",
       });
     }
-    const hashedPassword = encryptData(req.body.password)
+    const hashedPassword = await encryptData(req.body.password)
 
     const staffData = {
       firstName: req.body.firstName,
@@ -282,7 +290,7 @@ exports.updateStaff = async (req, res) => {
 
     // Hash password if provided
     if (req.body.password) {
-      req.body.password = encryptData(req.body.password);
+      req.body.password = await encryptData(req.body.password);
     }
 
     // Convert date fields if provided
@@ -420,12 +428,20 @@ exports.loginStaff = async (req, res) => {
     }
 
     // Verify password
-    const isMatch = compareData(password, staff.password);
+    const isMatch = await compareData(password, staff.password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
       });
+    }
+
+    // Transparently upgrade legacy (pre-bcrypt) password hashes now that we
+    // know the plaintext password is correct, so every account migrates to
+    // bcrypt the next time its owner logs in, with no forced reset.
+    if (!/^\$2[aby]\$/.test(staff.password)) {
+      staff.password = await encryptData(password);
+      await staff.save();
     }
 
     // Generate JWT token
@@ -783,7 +799,7 @@ exports.bulkCreateStaff = async (req, res) => {
             }
 
             // Hash password
-            const hashedPassword = encryptData(password);
+            const hashedPassword = await encryptData(password);
 
             staffMembers.push({
               firstName,
@@ -869,7 +885,7 @@ exports.updateStaffPassword = async (req, res) => {
     }
 
     // Verify current password
-    const isMatch = compareData(currentPassword, staff.password);
+    const isMatch = await compareData(currentPassword, staff.password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
@@ -878,7 +894,7 @@ exports.updateStaffPassword = async (req, res) => {
     }
 
     // Hash new password
-    const hashedPassword = encryptData(newPassword);
+    const hashedPassword = await encryptData(newPassword);
 
     // Update password
     staff.password = hashedPassword;
